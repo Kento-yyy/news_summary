@@ -11,7 +11,7 @@ from hashlib import sha1
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit, parse_qsl, urlencode
 import xml.etree.ElementTree as ET
 
 try:
@@ -284,6 +284,20 @@ def fetch_webapi_json(api_url: str, timeout=15):
     r.raise_for_status()
     return r.json()
 
+
+def adjust_web_api_top(api_url: str, fetch_limit: int) -> str:
+    if fetch_limit <= 0:
+        return api_url
+    try:
+        parts = list(urlsplit(api_url))
+        query_pairs = parse_qsl(parts[3], keep_blank_values=True)
+        query = dict(query_pairs)
+        query["top"] = str(fetch_limit)
+        parts[3] = urlencode(query)
+        return urlunsplit(parts)
+    except Exception:
+        return api_url
+
 def fetch_fulltext(url: str, timeout=15, force=False):
     if trafilatura is None:
         return ""
@@ -504,7 +518,7 @@ def render_markdown(company: str, parsed, items):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=["rss","web"], default="rss")
-    ap.add_argument("--web-api", default="http://127.0.0.1:8080/api/news?top=3")
+    ap.add_argument("--web-api", default="http://127.0.0.1:8080/api/news?top=100")
     ap.add_argument("--file", default="corporate.list")
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--lang", default="ja")
@@ -519,6 +533,12 @@ def main():
     ap.add_argument("--validator-model", default="", help="Override model for the format checker")
     ap.add_argument("--validator-max-tokens", type=int, default=400)
     ap.add_argument("--validator-temperature", type=float, default=0.0)
+    ap.add_argument(
+        "--fetch-limit",
+        type=int,
+        default=100,
+        help="Number of articles to retrieve before applying date filters (default: 100).",
+    )
     ap.add_argument(
         "--period-days",
         type=int,
@@ -542,21 +562,31 @@ def main():
     validator_model = args.validator_model or args.llm_model
 
     # Gather news
+    top_limit = max(args.top or 0, 0)
+    fetch_limit = args.fetch_limit if args.fetch_limit is not None else 0
+    if fetch_limit < 0:
+        fetch_limit = 0
+    if fetch_limit and top_limit > fetch_limit:
+        fetch_limit = top_limit
+
     if args.source == "web":
-        raw = fetch_webapi_json(args.web_api)
+        api_url = adjust_web_api_top(args.web_api, fetch_limit) if fetch_limit else args.web_api
+        raw = fetch_webapi_json(api_url)
         news_map = {}
         for c in companies:
             payload = (raw.get(c, {}) or {})
             items = payload.get("items") or []
-            filtered = filter_items_by_period(items, args.period_days)
-            news_map[c] = filtered[:max(args.top,0)]
+            limited = items[:fetch_limit] if fetch_limit else items
+            filtered = filter_items_by_period(limited, args.period_days)
+            news_map[c] = filtered[:top_limit]
     else:
         news_map = {}
         for c in companies:
             try:
                 fetched = fetch_rss_for_company(c, args.lang, args.region)
-                filtered = filter_items_by_period(fetched, args.period_days)
-                news_map[c] = filtered[:max(args.top,0)]
+                limited = fetched[:fetch_limit] if fetch_limit else fetched
+                filtered = filter_items_by_period(limited, args.period_days)
+                news_map[c] = filtered[:top_limit]
             except Exception as e:
                 sys.stderr.write(f"[WARN] {c}: RSS fetch failed: {e}\n")
                 news_map[c] = []
