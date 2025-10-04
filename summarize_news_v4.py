@@ -692,6 +692,7 @@ def main():
         return messages
 
     for c in companies:
+        print(c)
         items = news_map.get(c, [])
         p1 = prompt_markers(c, items, fulltext=args.fulltext, snippet_chars=args.snippet_chars)
         try:
