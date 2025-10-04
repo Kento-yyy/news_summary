@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from hashlib import sha1
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
@@ -189,6 +190,77 @@ def jst_str_from_pubdate(pubdate: str) -> str:
         return dt.strftime("%Y-%m-%d %H:%M JST")
     except Exception:
         return pubdate or ""
+
+
+def parse_datetime_guess(value: str):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dt = parsedate_to_datetime(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    cleaned = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    suffix_map = {
+        "JST": JST,
+        "UTC": timezone.utc,
+        "GMT": timezone.utc,
+    }
+    for suffix, tz in suffix_map.items():
+        if text.endswith(suffix):
+            core = text[: -len(suffix)].strip()
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    dt = datetime.strptime(core, fmt)
+                    dt = dt.replace(tzinfo=tz)
+                    return dt.astimezone(timezone.utc)
+                except Exception:
+                    continue
+            try:
+                dt = datetime.fromisoformat(core + ("+09:00" if tz == JST else "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=tz)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                continue
+    return None
+
+
+def item_published_datetime(item: dict):
+    if not isinstance(item, dict):
+        return None
+    for key in ("pubDate", "pubDateJST", "publishedAt", "published_at", "date", "datetime"):
+        candidate = item.get(key)
+        dt = parse_datetime_guess(candidate)
+        if dt is not None:
+            return dt
+    return None
+
+
+def filter_items_by_period(items, period_days: int):
+    iterable = list(items or [])
+    if period_days is None or period_days <= 0:
+        return iterable
+    threshold = datetime.now(timezone.utc) - timedelta(days=period_days)
+    filtered = []
+    for it in iterable:
+        dt = item_published_datetime(it)
+        if dt is None or dt >= threshold:
+            filtered.append(it)
+    return filtered
+
 
 def load_companies(path: Path):
     defaults = ["Nintendo", "Kioxia", "Socionext", "Nvidia", "Intel"]
@@ -446,6 +518,12 @@ def main():
     ap.add_argument("--validator-model", default="", help="Override model for the format checker")
     ap.add_argument("--validator-max-tokens", type=int, default=400)
     ap.add_argument("--validator-temperature", type=float, default=0.0)
+    ap.add_argument(
+        "--period-days",
+        type=int,
+        default=7,
+        help="Include only articles published within this many days (default: 7). Use 0 to disable filtering.",
+    )
     ap.add_argument("--schema", choices=["markers","json"], default="markers")
     ap.add_argument("--min-lines", type=int, default=2)
     ap.add_argument("--echo-raw", action="store_true")
@@ -460,12 +538,19 @@ def main():
     # Gather news
     if args.source == "web":
         raw = fetch_webapi_json(args.web_api)
-        news_map = {c: (raw.get(c, {}) or {}).get("items", [])[:max(args.top,0)] for c in companies}
+        news_map = {}
+        for c in companies:
+            payload = (raw.get(c, {}) or {})
+            items = payload.get("items") or []
+            filtered = filter_items_by_period(items, args.period_days)
+            news_map[c] = filtered[:max(args.top,0)]
     else:
         news_map = {}
         for c in companies:
             try:
-                news_map[c] = fetch_rss_for_company(c, args.lang, args.region)[:max(args.top,0)]
+                fetched = fetch_rss_for_company(c, args.lang, args.region)
+                filtered = filter_items_by_period(fetched, args.period_days)
+                news_map[c] = filtered[:max(args.top,0)]
             except Exception as e:
                 sys.stderr.write(f"[WARN] {c}: RSS fetch failed: {e}\n")
                 news_map[c] = []
