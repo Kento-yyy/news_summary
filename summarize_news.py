@@ -23,7 +23,7 @@ Examples:
 
 Output:
     - Prints Markdown to stdout
-    - Saves to ./news_summary_YYYYMMDD_HHMMSS.md
+    - Saves to ./markdown/news_summary_YYYYMMDD_HHMMSS.md
 """
 import argparse
 import json
@@ -40,6 +40,7 @@ except ImportError:
     sys.exit(1)
 
 JST = timezone(timedelta(hours=9))
+OUTPUT_DIR = Path("markdown")
 
 # -----------------------------
 # News fetching
@@ -243,10 +244,12 @@ def main():
     out_text = "\n\n".join(md) + "\n"
     print(out_text)
 
-    # Save to file
+    # Save to file under the markdown output directory
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_name = f"news_summary_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.md"
-    Path(out_name).write_text(out_text, encoding="utf-8")
-    print(f"\n[Saved] {out_name}")
+    out_path = OUTPUT_DIR / out_name
+    out_path.write_text(out_text, encoding="utf-8")
+    print(f"\n[Saved] {out_path}")
 
 if __name__ == "__main__":
     main()
