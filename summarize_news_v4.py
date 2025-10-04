@@ -29,6 +29,7 @@ CACHE_DIR = Path(".news_cache")
 OUTPUT_BEGIN = "<<<BEGIN_OUTPUT>>>"
 OUTPUT_END = "<<<END_OUTPUT>>>"
 FORMAT_ERROR_TOKEN = "FORMAT_ERROR"
+MAX_FORMAT_REGENERATIONS = 3
 
 
 @dataclass
@@ -603,45 +604,93 @@ def main():
         items = news_map.get(c, [])
         p1 = prompt_markers(c, items, fulltext=args.fulltext, snippet_chars=args.snippet_chars)
         try:
-            out1 = call_llm(args.llm_endpoint, args.llm_model, p1, args.temperature, args.max_tokens, stop=stop_list, retries=1)
+            out1 = call_llm(
+                args.llm_endpoint,
+                args.llm_model,
+                p1,
+                args.temperature,
+                args.max_tokens,
+                stop=stop_list,
+                retries=1,
+            )
         except Exception as e:
             out1 = f"(error) {e}"
-        save_raw(f"{c}_try1.txt", out1)
 
         validator_notes = []
         parsed = None
+        marker_source = out1
+        validation = None
 
-        validation = validate_output("markers", out1, c, "try1")
-        marker_source = validation.output or out1
-        try:
-            parsed = parse_markers(marker_source)
-        except Exception as e:
-            validator_notes.append(f"markers:parse_error:{e}")
-            parsed = None
-        if not validation.valid:
-            if validation.issues:
-                validator_notes.extend([f"markers:{msg}" for msg in validation.issues])
-            else:
-                validator_notes.append("markers:invalid")
+        for attempt in range(1, MAX_FORMAT_REGENERATIONS + 1):
+            attempt_suffix = "" if attempt == 1 else f"_attempt{attempt}"
+            if attempt > 1:
+                try:
+                    out1 = call_llm(
+                        args.llm_endpoint,
+                        args.llm_model,
+                        p1,
+                        args.temperature,
+                        args.max_tokens,
+                        stop=stop_list,
+                        retries=1,
+                    )
+                except Exception as e:
+                    out1 = f"(error) {e}"
+            save_raw(f"{c}_try1{attempt_suffix}.txt", out1)
 
+            attempt_tag = f"try1{attempt_suffix}"
+            validation = validate_output("markers", out1, c, attempt_tag)
+            marker_source = validation.output or out1
+            try:
+                parsed = parse_markers(marker_source)
+            except Exception as e:
+                validator_notes.append(f"markers:parse_error:{e}")
+                parsed = None
+            if not validation.valid:
+                if validation.issues:
+                    validator_notes.extend([f"markers:{msg}" for msg in validation.issues])
+                else:
+                    validator_notes.append("markers:invalid")
+            if validation.valid and parsed and len(parsed.get("summary", [])) >= args.min_lines:
+                break
         if not parsed or len(parsed.get("summary", [])) < args.min_lines:
             pj = prompt_json(c, items, fulltext=args.fulltext, snippet_chars=args.snippet_chars)
-            try:
-                out2 = call_llm(args.llm_endpoint, args.llm_model, pj, args.temperature, args.max_tokens, stop=["```"], retries=1)
-            except Exception as e:
-                out2 = f"(error) {e}"
-            save_raw(f"{c}_try2_json.txt", out2)
-            validation_json = validate_output("json", out2, c, "try2")
-            try:
-                parsed = parse_json(validation_json.output or out2)
-            except Exception as e:
-                parsed = {"summary": [], "impact": {"mark": "→", "reason": ""}, "notes": ["LLM出力の解析に失敗。"]}
-                validator_notes.append(f"json:parse_error:{e}")
-            if not validation_json.valid:
-                if validation_json.issues:
-                    validator_notes.extend([f"json:{msg}" for msg in validation_json.issues])
-                else:
-                    validator_notes.append("json:invalid")
+            out2 = ""
+            validation_json = None
+            for attempt in range(1, MAX_FORMAT_REGENERATIONS + 1):
+                attempt_suffix = "" if attempt == 1 else f"_attempt{attempt}"
+                try:
+                    out2 = call_llm(
+                        args.llm_endpoint,
+                        args.llm_model,
+                        pj,
+                        args.temperature,
+                        args.max_tokens,
+                        stop=["```"],
+                        retries=1,
+                    )
+                except Exception as e:
+                    out2 = f"(error) {e}"
+                save_raw(f"{c}_try2_json{attempt_suffix}.txt", out2)
+                attempt_tag = f"try2{attempt_suffix}"
+                validation_json = validate_output("json", out2, c, attempt_tag)
+                try:
+                    parsed = parse_json(validation_json.output or out2)
+                except Exception as e:
+                    parsed = {
+                        "summary": [],
+                        "impact": {"mark": "→", "reason": ""},
+                        "notes": ["LLM出力の解析に失敗。"],
+                    }
+                    validator_notes.append(f"json:parse_error:{e}")
+                if not validation_json.valid:
+                    if validation_json.issues:
+                        validator_notes.extend([f"json:{msg}" for msg in validation_json.issues])
+                    else:
+                        validator_notes.append("json:invalid")
+                    if attempt < MAX_FORMAT_REGENERATIONS:
+                        continue
+                break
 
         if validator_notes:
             parsed.setdefault("notes", [])
