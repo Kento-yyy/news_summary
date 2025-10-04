@@ -27,6 +27,7 @@ except Exception:
 
 JST = timezone(timedelta(hours=9))
 CACHE_DIR = Path(".news_cache")
+MARKDOWN_OUTPUT_DIR = Path("markdown")
 OUTPUT_BEGIN = "<<<BEGIN_OUTPUT>>>"
 OUTPUT_END = "<<<END_OUTPUT>>>"
 FORMAT_ERROR_TOKEN = "FORMAT_ERROR"
@@ -527,7 +528,12 @@ def main():
     ap.add_argument("--schema", choices=["markers","json"], default="markers")
     ap.add_argument("--min-lines", type=int, default=2)
     ap.add_argument("--echo-raw", action="store_true")
-    ap.add_argument("-o","--output", default="")
+    ap.add_argument(
+        "-o",
+        "--output",
+        default="",
+        help="Output filename (relative paths are saved under markdown/)",
+    )
 
     args = ap.parse_args()
 
@@ -788,9 +794,20 @@ def main():
     md.extend(sections)
     out_text = "\n\n".join(md) + "\n"
     print(out_text)
-    out_name = args.output or f"news_summary_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.md"
-    Path(out_name).write_text(out_text, encoding="utf-8")
-    print(f"\n[Saved] {out_name}")
+    MARKDOWN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_arg = (args.output or "").strip()
+    if output_arg:
+        candidate = Path(output_arg)
+        if not candidate.is_absolute() and candidate.parent == Path('.'):
+            out_path = MARKDOWN_OUTPUT_DIR / candidate.name
+        else:
+            out_path = candidate
+    else:
+        out_path = MARKDOWN_OUTPUT_DIR / f"news_summary_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.md"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(out_text, encoding="utf-8")
+    print(f"\n[Saved] {out_path}")
 
 if __name__ == "__main__":
     main()
